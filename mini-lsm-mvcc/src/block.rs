@@ -29,6 +29,7 @@ pub struct Block {
 }
 
 impl Block {
+    // offsets放在最后，表示offset数组的开始位置
     pub fn encode(&self) -> Bytes {
         let mut buf = self.data.clone();
         let offsets_len = self.offsets.len();

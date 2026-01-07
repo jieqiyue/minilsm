@@ -154,6 +154,9 @@ impl LsmStorageInner {
             }
 
             // gc
+            // 这里会把first_key_below_watermark设置为false，并且还设置了last_key，那么后续如果还有这个key的话，就会一起被删除了，在下面一个分支里面被删除的。
+            // 如果某一个key他在同一个ts里面，先被删除，又被设置了一个值，并且他们ts都小于了watermark的话，那么会保留最后设置的值，那个墓碑会在下面被删除掉。这个if
+            // 仅仅是为了将那种墓碑消息开头的，当墓碑消息被删除之后，后续所有的也要一并删除掉的功能。
             if compact_to_bottom_level
                 && !same_as_last_key
                 && iter.key().ts() <= watermark
@@ -167,6 +170,7 @@ impl LsmStorageInner {
             }
 
             // gc
+            // 这里可以等于的原因是watermark是一个固定的ts，那么在这个ts下一个key也是只需要保留一份就行了
             if iter.key().ts() <= watermark {
                 // 如果first_key_below_watermark为true，那么不会进入下面这个if，也就是说即使某一个key，它是ts小于了watermark也不应该随意删除
                 // 至少需要给他保留一个版本。只有当保留了一个版本之后，对于同一个key的小于watermark的版本才可以删除。
@@ -176,6 +180,7 @@ impl LsmStorageInner {
                     continue;
                 }
 
+                // 所以如果有两个相同的key，并且他们的ts都小于watermark的话，那么第二个key在被遍历到的时候这里就会设置为false了。
                 first_key_below_watermark = false;
 
                 if !compaction_filters.is_empty() {
@@ -268,6 +273,7 @@ impl LsmStorageInner {
                 lower_level_sst_ids,
                 ..
             }) => match upper_level {
+                // 是否是l0层的压缩唯一的区别就是构造迭代器的时候，这里是构造哪种迭代器了
                 Some(_) => {
                     let mut upper_ssts = Vec::with_capacity(upper_level_sst_ids.len());
                     for id in upper_level_sst_ids.iter() {
@@ -286,6 +292,7 @@ impl LsmStorageInner {
                 }
                 // l0 compacton
                 None => {
+                    // 将l0中的所有sst构造成一个迭代器
                     let mut upper_iters = Vec::with_capacity(upper_level_sst_ids.len());
                     for id in upper_level_sst_ids.iter() {
                         upper_iters.push(Box::new(SsTableIterator::create_and_seek_to_first(

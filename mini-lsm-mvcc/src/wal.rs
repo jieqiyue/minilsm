@@ -43,6 +43,7 @@ impl Wal {
         })
     }
 
+    // skiplist是引用，recover结束之后，这个skiplist就有数据了
     pub fn recover(path: impl AsRef<Path>, skiplist: &SkipMap<KeyBytes, Bytes>) -> Result<Self> {
         let path = path.as_ref();
         let mut file = OpenOptions::new()
@@ -54,10 +55,12 @@ impl Wal {
         file.read_to_end(&mut buf)?;
         let mut rbuf: &[u8] = buf.as_slice();
         while rbuf.has_remaining() {
+            // 一次batch写入的数据的长度，不包括最后的hash
             let batch_size = rbuf.get_u32() as usize;
             if rbuf.remaining() < batch_size {
                 bail!("incomplete WAL");
             }
+            // 读取一次batch写入的所有数据
             let mut batch_buf = &rbuf[..batch_size];
             let mut kv_pairs = Vec::new();
             let mut hasher = crc32fast::Hasher::new();
@@ -82,8 +85,11 @@ impl Wal {
             rbuf.advance(batch_size);
             let expected_checksum = rbuf.get_u32();
             let component_checksum = hasher.finalize();
+            // 这两个不太可能会不一样吧，都是刚刚计算出来的，所以直接panic
             assert_eq!(component_checksum, single_checksum);
+            // 这个有可能不一样，expected_checksum是写入file之前计算出来的
             if single_checksum != expected_checksum {
+                // 立即返回一个错误Result
                 bail!("checksum mismatch");
             }
             for (key, ts, value) in kv_pairs {
@@ -96,6 +102,8 @@ impl Wal {
     }
 
     /// Implement this in week 3, day 5.
+    /// wsl 格式：
+    /// 后面一次batch put的总的长度 u32类型，【key len ,  raw key , key ts , value len , raw value】 checksum
     pub fn put_batch(&self, data: &[(KeySlice, &[u8])]) -> Result<()> {
         let mut file = self.file.lock();
         let mut buf = Vec::<u8>::new();

@@ -22,11 +22,11 @@ use crate::lsm_storage::LsmStorageState;
 pub struct LeveledCompactionTask {
     // if upper_level is `None`, then it is L0 compaction
     pub upper_level: Option<usize>,
-    // 如果是l0的合并，这个就是l0的所有sst id，如果不是l0那就是最高优先级的那一层的最早的那个sst
+    // 如果是l0的合并，这个就是l0的所有sst id，如果不是l0那就是最高优先级的那一层的最早的那个sst的所有sst id吗？
     pub upper_level_sst_ids: Vec<usize>,
     // 0-max_levels里面最后一个（最小）一个层级的上一个层级。比如说最终是2有target size，那么这个值就是3
     pub lower_level: usize,
-    // 底层要被合并的那个层的那些sst用来合并
+    // 底层要被合并的那个层的那些sst用来合并，sst id的集合
     pub lower_level_sst_ids: Vec<usize>,
     pub is_lower_level_bottom_level: bool,
 }
@@ -48,6 +48,7 @@ impl LeveledCompactionController {
         Self { options }
     }
 
+    // 这里仅仅拿到要被合并的那个sst层里面和上层sst_ids中有重叠的那些sst id
     fn find_overlapping_ssts(
         &self,
         snapshot: &LsmStorageState,
@@ -67,6 +68,7 @@ impl LeveledCompactionController {
             .cloned()
             .unwrap();
         let mut overlap_ssts = Vec::new();
+        // 由于这里-1了，所以这里拿到的是真实的最后的有target size的那一层
         for sst_id in &snapshot.levels[in_level - 1].1 {
             let sst = &snapshot.sstables[sst_id];
             let first_key = sst.first_key();
@@ -86,6 +88,7 @@ impl LeveledCompactionController {
         let mut target_level_size = (0..self.options.max_levels).map(|_| 0).collect::<Vec<_>>(); // exclude level 0
         let mut real_level_size = Vec::with_capacity(self.options.max_levels);
 
+        // base_level一开始是max_levels，也就是最后一层，意味着刚开始压缩会压缩到最后一层去
         let mut base_level = self.options.max_levels;
         // 拿到每一层的真实大小
         for i in 0..self.options.max_levels {
@@ -97,6 +100,7 @@ impl LeveledCompactionController {
                     .sum::<u64>() as usize,
             );
         }
+        // mb转化为byte
         let base_level_size_bytes = self.options.base_level_size_mb * 1024 * 1024;
 
         // select base level and compute target level size
@@ -104,11 +108,14 @@ impl LeveledCompactionController {
             real_level_size[self.options.max_levels - 1].max(base_level_size_bytes);
         // 倒序，从max_levels - 1 - 1开始往0遍历，也就是倒数第二层
         for i in (0..(self.options.max_levels - 1)).rev() {
+            // 首先拿到要计算target size的那一层的下一层的target size，然后根据下一层的target size计算出本层的target size。
             let next_level_size = target_level_size[i + 1];
             let this_level_size = next_level_size / self.options.level_size_multiplier;
+            // 并且此处还需要判断下一层的target size是否大于了base_level_size_bytes这个阈值，防止有太小的target size
             if next_level_size > base_level_size_bytes {
                 target_level_size[i] = this_level_size;
             }
+            // 由于是从大到小，如果target_level_size有值的话，那么就用小的做为base_level
             if target_level_size[i] > 0 {
                 base_level = i + 1;
             }
@@ -197,6 +204,7 @@ impl LeveledCompactionController {
             .iter()
             .copied()
             .collect::<HashSet<_>>();
+
         if let Some(upper_level) = task.upper_level {
             let new_upper_level_ssts = snapshot.levels[upper_level - 1]
                 .1
@@ -208,9 +216,11 @@ impl LeveledCompactionController {
                     Some(*x)
                 })
                 .collect::<Vec<_>>();
+            // 在进行压缩的时候还可以进行压缩吗？
             assert!(upper_level_sst_ids_set.is_empty());
             snapshot.levels[upper_level - 1].1 = new_upper_level_ssts;
         } else {
+            // 由于在压缩过程中，l0还是有可能写入数据的，所以这里将l0剩下的给搜集出来
             let new_l0_ssts = snapshot
                 .l0_sstables
                 .iter()
@@ -222,9 +232,11 @@ impl LeveledCompactionController {
                 })
                 .collect::<Vec<_>>();
             assert!(upper_level_sst_ids_set.is_empty());
+            // 得到一个新的l0
             snapshot.l0_sstables = new_l0_ssts;
         }
 
+        // upper_level_sst_ids是上层的所有sst id的集合吗
         files_to_remove.extend(&task.upper_level_sst_ids);
         files_to_remove.extend(&task.lower_level_sst_ids);
 
@@ -239,9 +251,11 @@ impl LeveledCompactionController {
             })
             .collect::<Vec<_>>();
         assert!(lower_level_sst_ids_set.is_empty());
+        // 下层去掉被合并的，然后加上合并之后的
         new_lower_level_ssts.extend(output);
         // Don't sort the SST IDs during recovery because actual SSTs are not loaded at that point
         if !in_recovery {
+            // 由于排序需要从sstables拿到sst，所以当recovery的时候，这个时候还没有真正的打开sst文件，所以不排序
             new_lower_level_ssts.sort_by(|x, y| {
                 snapshot
                     .sstables

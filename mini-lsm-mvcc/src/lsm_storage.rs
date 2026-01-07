@@ -48,8 +48,11 @@ pub struct LsmStorageState {
     /// The current memtable.
     pub memtable: Arc<MemTable>,
     /// Immutable memtables, from latest to earliest.
+    /// 从memtable转化而来的，因为MemTable是Arc包裹的，所以从memtable过来的时候，直接clone就行了
     pub imm_memtables: Vec<Arc<MemTable>>,
     /// L0 SSTs, from latest to earliest.
+    /// l0存在的意义是加快写入速度，因为l1开始就是有序的sst，那么从内存到磁盘这个过程如果没有l0的话，就会触发compaction了。
+    /// 并且有很多的读放大。
     pub l0_sstables: Vec<usize>,
     /// SsTables sorted by key range; L1 - L_max for leveled compaction, or tiers for tiered
     /// compaction.
@@ -171,14 +174,24 @@ pub enum CompactionFilter {
 
 /// The storage interface of the LSM tree.
 pub(crate) struct LsmStorageInner {
+    // write：
+    // 1. 内存memtable刷盘到磁盘上时，需要pop掉被刷到磁盘上的那个
+    // 2. 在压缩了之后apply_compaction_result之后需要替换这个state
     pub(crate) state: Arc<RwLock<Arc<LsmStorageState>>>,
+    // 1. 内存中的immune memtable刷到磁盘上时，由于内存中的imm_memtables刷到磁盘上时会去直接pop顶层的
+    // 2. 所以try_freeze的时候需要不变，所以得加锁。保证这个imm_memtables不能变，所以在写入的时候可能会卡住，如果这个时候刚好在try_freeze的话。
+    // 3. 当进行了压缩之后，生成了压缩之后的sst列表之后
     pub(crate) state_lock: Mutex<()>,
+    // wal的路径，最终wal所在位置是这个path拼接上wal的编号然后叫做xxxx.wal的文件
     path: PathBuf,
     pub(crate) block_cache: Arc<BlockCache>,
+    // memtable用来编号的
     next_sst_id: AtomicUsize,
     pub(crate) options: Arc<LsmStorageOptions>,
     pub(crate) compaction_controller: CompactionController,
+    // 用来进行崩溃恢复的
     pub(crate) manifest: Option<Manifest>,
+    // 维护整个存储引擎的整体的事务情况
     pub(crate) mvcc: Option<LsmMvccInner>,
     pub(crate) compaction_filters: Arc<Mutex<Vec<CompactionFilter>>>,
 }
@@ -416,6 +429,7 @@ impl LsmStorageInner {
             next_sst_id += 1;
 
             // Sort SSTs on each level (only for leveled compaction)
+            // 为什么只有level需要排序？
             if let CompactionController::Leveled(_) = &compaction_controller {
                 for (_id, ssts) in &mut state.levels {
                     ssts.sort_by(|x, y| {
@@ -574,7 +588,9 @@ impl LsmStorageInner {
         Ok(None)
     }
 
+    // 写入的时候，如果没有开启serializable，就直接调用这个方法
     pub fn write_batch_inner<T: AsRef<[u8]>>(&self, batch: &[WriteBatchRecord<T>]) -> Result<u64> {
+        // 这里为什么要拿到这个锁
         let _lck = self.mvcc().write_lock.lock();
         let ts = self.mvcc().latest_commit_ts() + 1;
         let mut batch_datas: Vec<(key::Key<&[u8]>, &[u8])> = vec![];
@@ -632,8 +648,10 @@ impl LsmStorageInner {
     /// Put a key-value pair into the storage by writing into the current memtable.
     pub fn put(self: &Arc<Self>, key: &[u8], value: &[u8]) -> Result<()> {
         if !self.options.serializable {
+            // 就算没有serializable，写入的key也会被分配上一个时间戳
             self.write_batch_inner(&[WriteBatchRecord::Put(key, value)])?;
         } else {
+            // 拿到了一个事务
             let txn = self.mvcc().new_txn(self.clone(), self.options.serializable);
             txn.put(key, value);
             txn.commit()?;
@@ -752,6 +770,7 @@ impl LsmStorageInner {
 
         // Add the flushed L0 table to the list.
         {
+            // 此处直接pop，那是不是意味着从这个函数开始就不能再去改变state了
             let mut guard = self.state.write();
             let mut snapshot = guard.as_ref().clone();
             // Remove the memtable from the immutable memtables.

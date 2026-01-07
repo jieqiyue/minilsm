@@ -40,8 +40,11 @@ pub(crate) struct CommittedTxnData {
 
 // LsmMvccInner这个结构是干嘛的？
 pub(crate) struct LsmMvccInner {
+    // 没有事务的时候，直接写入的时候调用这个进行lock
     pub(crate) write_lock: Mutex<()>,
+    // 在生成的 Transaction进行lock的时候调用
     pub(crate) commit_lock: Mutex<()>,
+    // 有事务的时候，调用这个进行lock，然后再拿到timestamp，Watermark不是线程安全的
     pub(crate) ts: Arc<Mutex<(u64, Watermark)>>,
     pub(crate) committed_txns: Arc<Mutex<BTreeMap<u64, CommittedTxnData>>>,
 }
@@ -72,7 +75,9 @@ impl LsmMvccInner {
 
     pub fn new_txn(&self, inner: Arc<LsmStorageInner>, serializable: bool) -> Arc<Transaction> {
         let mut ts = self.ts.lock();
+        // 这里不会+1，而是直接用这个ts
         let read_ts = ts.0;
+        // 当前的事务读数量+1
         ts.1.add_reader(read_ts);
         Arc::new(Transaction {
             inner,

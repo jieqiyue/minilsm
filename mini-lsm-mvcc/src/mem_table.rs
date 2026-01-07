@@ -34,8 +34,10 @@ use crate::wal::Wal;
 /// chapters of week 1 and week 2.
 pub struct MemTable {
     pub(crate) map: Arc<SkipMap<KeyBytes, Bytes>>,
+    // 如果没有开启wal，那么这一项是none，那么在将memtable转化为immune memtable的时候，就不需要sync这个东西
     wal: Option<Wal>,
     id: usize,
+    // 预估大小，为什么从wal恢复的时候也是0？
     approximate_size: Arc<AtomicUsize>,
 }
 
@@ -169,6 +171,7 @@ impl MemTable {
         }
         self.approximate_size
             .fetch_add(estimated_size, std::sync::atomic::Ordering::Relaxed);
+        // wal是跟memtable绑定的吗？
         if let Some(ref wal) = self.wal {
             wal.put_batch(data)?;
         }

@@ -31,7 +31,9 @@ pub struct Manifest {
 #[derive(Serialize, Deserialize)]
 pub enum ManifestRecord {
     Flush(usize),
+    // ToDo 新建了一个memtable需要怎么恢复？
     NewMemtable(usize),
+    // 这个第二个参数是压缩之后得到的新的sst id，也就是把上层sst和下层sst合并之后生成的sst列表
     Compaction(CompactionTask, Vec<usize>),
 }
 

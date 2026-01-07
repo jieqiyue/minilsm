@@ -26,7 +26,7 @@ pub struct BlockBuilder {
     data: Vec<u8>,
     /// The expected block size.
     block_size: usize,
-    /// The first key in the block
+    /// The first key in the block  只用来计算overlap不做其他使用
     first_key: KeyVec,
 }
 

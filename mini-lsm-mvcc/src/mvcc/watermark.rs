@@ -31,6 +31,7 @@ impl Watermark {
         }
     }
 
+    // b树不是线程安全的
     pub fn add_reader(&mut self, ts: u64) {
         *self.readers.entry(ts).or_default() += 1;
     }

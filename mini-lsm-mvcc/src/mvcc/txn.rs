@@ -36,11 +36,13 @@ use crate::{
 };
 
 pub struct Transaction {
+    // 这个是在事务启动的时候拿到的，代表了当前的创建这个事务的那个时刻的ts。
     pub(crate) read_ts: u64,
     pub(crate) inner: Arc<LsmStorageInner>,
+    // get的时候首先在本地storage里面搜索如果找不到了，再拿着这个ts去LsmStorageInner中搜索
     pub(crate) local_storage: Arc<SkipMap<Bytes, Bytes>>,
     pub(crate) committed: Arc<AtomicBool>,
-    /// Write set and read set
+    /// Write set and read set  开启了options.serializable才会有
     pub(crate) key_hashes: Option<Mutex<(HashSet<u32>, HashSet<u32>)>>,
 }
 
@@ -95,6 +97,7 @@ impl Transaction {
         if let Some(key_hashes) = &self.key_hashes {
             let mut key_hashes = key_hashes.lock();
             let (write_hashes, _) = &mut *key_hashes;
+            // 并发控制
             write_hashes.insert(farmhash::hash32(key));
         }
     }
@@ -108,6 +111,7 @@ impl Transaction {
         if let Some(key_hashes) = &self.key_hashes {
             let mut key_hashes = key_hashes.lock();
             let (write_hashes, _) = &mut *key_hashes;
+            // 并发控制
             write_hashes.insert(farmhash::hash32(key));
         }
     }
@@ -116,6 +120,7 @@ impl Transaction {
         self.committed
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .expect("cannot operate on committed txn!");
+        // 这个锁保证了同一个时刻只有一个事务可以提交
         let _commit_lock = self.inner.mvcc().commit_lock.lock();
         let serializability_check;
         if let Some(guard) = &self.key_hashes {
@@ -128,6 +133,8 @@ impl Transaction {
             if !write_set.is_empty() {
                 let committed_txns = self.inner.mvcc().committed_txns.lock();
                 for (_, txn_data) in committed_txns.range((self.read_ts + 1)..) {
+                    // 如果A事务读取过在他后面提交的B事务的写入集合中的数据，那么认为有冲突
+                    // 当前事务还没有提交，但是有事务
                     for key_hash in read_set {
                         if txn_data.key_hashes.contains(key_hash) {
                             bail!("serializable check failed");
@@ -157,6 +164,7 @@ impl Transaction {
             let (write_set, _) = &mut *key_hashes;
 
             let old_data = committed_txns.insert(
+                // 这里insert的时候需要使用提交完这个事务的ts，而不是一开始的read_ts
                 ts,
                 CommittedTxnData {
                     key_hashes: std::mem::take(write_set),

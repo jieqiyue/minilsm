@@ -32,6 +32,7 @@ pub struct SsTableBuilder {
     data: Vec<u8>,
     pub(crate) meta: Vec<BlockMeta>,
     block_size: usize,
+    // 这个不是bloom filter吗
     key_hashes: Vec<u32>,
     max_ts: u64,
 }
@@ -89,6 +90,7 @@ impl SsTableBuilder {
             first_key: std::mem::take(&mut self.first_key).into_key_bytes(),
             last_key: std::mem::take(&mut self.last_key).into_key_bytes(),
         });
+        // 针对一个block有一个checksum
         let checksum = crc32fast::hash(&encoded_block);
         self.data.extend(encoded_block);
         self.data.put_u32(checksum);

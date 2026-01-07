@@ -208,6 +208,7 @@ impl SsTable {
     }
 
     /// Read a block from the disk.
+    /// 每一个block在最后有一段checksum
     pub fn read_block(&self, block_idx: usize) -> Result<Arc<Block>> {
         let offset = self.block_meta[block_idx].offset;
         let offset_end = self
